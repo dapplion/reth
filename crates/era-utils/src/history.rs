@@ -289,6 +289,25 @@ where
     Ok((header, body))
 }
 
+/// Like [`decode`] but also extracts receipts. Used by chains that ingest ERA
+/// archives without re-executing blocks.
+pub fn decode_with_receipts<BH, BB, R, E>(
+    block: Result<BlockTuple, E>,
+) -> eyre::Result<(BH, BB, Vec<R>)>
+where
+    BH: FullBlockHeader + Value,
+    BB: FullBlockBody<OmmerHeader = BH>,
+    R: alloy_rlp::Decodable,
+    E: From<E2sError> + Error + Send + Sync + 'static,
+{
+    let block = block?;
+    let header: BH = block.header.decode()?;
+    let body: BB = block.body.decode()?;
+    let receipts: Vec<R> = block.receipts.decode()?;
+
+    Ok((header, body, receipts))
+}
+
 /// Extracts block headers and bodies from `iter` and appends them using `writer` and `provider`.
 ///
 /// Collects hash to height using `hash_collector`.
