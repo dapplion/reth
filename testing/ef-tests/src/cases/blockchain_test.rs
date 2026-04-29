@@ -1,7 +1,10 @@
 //! Test runners for `BlockchainTests` in <https://github.com/ethereum/tests>
 
 use crate::{
+    case::Cases,
     models::{BlockchainTest, ForkSpec},
+    result::assert_tests_pass,
+    suite::find_all_files_with_extension,
     Case, Error, Suite,
 };
 use alloy_rlp::Decodable;
@@ -29,16 +32,44 @@ use std::{
     sync::Arc,
 };
 
+/// A callback that mutates the per-test [`ChainSpec`] before block execution.
+///
+/// Downstream chains (Gnosis, etc.) use this to inject chain-specific extras
+/// like deposit-contract addresses or `extra_fields` that the EF tests don't
+/// carry but the chain's executor requires.
+pub type ChainSpecExtension = Arc<dyn Fn(&mut ChainSpec) + Send + Sync>;
+
 /// A handler for the blockchain test suite.
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct BlockchainTests {
     suite_path: PathBuf,
+    extend_chain_spec: Option<ChainSpecExtension>,
+}
+
+impl std::fmt::Debug for BlockchainTests {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockchainTests")
+            .field("suite_path", &self.suite_path)
+            .field("extend_chain_spec", &self.extend_chain_spec.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
 }
 
 impl BlockchainTests {
     /// Create a new suite for tests with blockchain tests format.
     pub const fn new(suite_path: PathBuf) -> Self {
-        Self { suite_path }
+        Self { suite_path, extend_chain_spec: None }
+    }
+
+    /// Register a callback that mutates each test's [`ChainSpec`] before
+    /// execution. Used by downstream chains to inject extras the EF test
+    /// fixtures don't carry.
+    pub fn with_chain_spec_extension<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&mut ChainSpec) + Send + Sync + 'static,
+    {
+        self.extend_chain_spec = Some(Arc::new(f));
+        self
     }
 }
 
@@ -48,15 +79,52 @@ impl Suite for BlockchainTests {
     fn suite_path(&self) -> &Path {
         &self.suite_path
     }
+
+    // Override to plumb the chain-spec extension into each loaded case.
+    fn run_only(&self, name: &str) {
+        let suite_path = self.suite_path().join(name);
+        assert!(suite_path.exists(), "Test suite path does not exist: {suite_path:?}");
+
+        let test_cases = find_all_files_with_extension(&suite_path, ".json")
+            .into_iter()
+            .map(|test_case_path| {
+                let case = BlockchainTestCase::load(&test_case_path)
+                    .expect("test case should load")
+                    .with_chain_spec_extension(self.extend_chain_spec.clone());
+                (test_case_path, case)
+            })
+            .collect();
+
+        let results = Cases { test_cases }.run();
+        assert_tests_pass(name, &suite_path, &results);
+    }
 }
 
 /// An Ethereum blockchain test.
-#[derive(Debug, PartialEq, Eq)]
 pub struct BlockchainTestCase {
     /// The tests within this test case.
     pub tests: BTreeMap<String, BlockchainTest>,
     /// Whether to skip this test case.
     pub skip: bool,
+    /// Optional callback to mutate each test's [`ChainSpec`].
+    pub extend_chain_spec: Option<ChainSpecExtension>,
+}
+
+impl std::fmt::Debug for BlockchainTestCase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockchainTestCase")
+            .field("tests", &self.tests)
+            .field("skip", &self.skip)
+            .finish()
+    }
+}
+
+impl BlockchainTestCase {
+    /// Attach a chain-spec extension callback. See [`BlockchainTests::with_chain_spec_extension`].
+    pub fn with_chain_spec_extension(mut self, ext: Option<ChainSpecExtension>) -> Self {
+        self.extend_chain_spec = ext;
+        self
+    }
 }
 
 impl BlockchainTestCase {
@@ -99,8 +167,18 @@ impl BlockchainTestCase {
     /// Execute a single `BlockchainTest`, validating the outcome against the
     /// expectations encoded in the JSON file.
     pub fn run_single_case(name: &str, case: &BlockchainTest) -> Result<(), Error> {
+        Self::run_single_case_ext(name, case, None)
+    }
+
+    /// Like [`run_single_case`](Self::run_single_case) but with an optional
+    /// chain-spec extension callback applied before block execution.
+    pub fn run_single_case_ext(
+        name: &str,
+        case: &BlockchainTest,
+        ext: Option<&ChainSpecExtension>,
+    ) -> Result<(), Error> {
         let expectation = Self::expected_failure(case);
-        match run_case(case) {
+        match run_case(case, ext) {
             // All blocks executed successfully.
             Ok(()) => {
                 // Check if the test case specifies that it should have failed
@@ -155,6 +233,7 @@ impl Case for BlockchainTestCase {
                     .map_err(|error| Error::CouldNotDeserialize { path: path.into(), error })?
             },
             skip: should_skip(path),
+            extend_chain_spec: None,
         })
     }
 
@@ -168,13 +247,17 @@ impl Case for BlockchainTestCase {
             return Err(Error::Skipped);
         }
 
+        let ext = self.extend_chain_spec.clone();
+
         // Iterate through test cases, filtering by the network type to exclude specific forks.
         self.tests
             .into_iter()
             .filter(|(_, case)| !Self::excluded_fork(case.network))
             .par_bridge_buffered()
             .with_min_len(64)
-            .try_for_each(|(name, case)| Self::run_single_case(&name, &case).map(|_| ()))
+            .try_for_each(|(name, case)| {
+                Self::run_single_case_ext(&name, &case, ext.as_ref()).map(|_| ())
+            })
     }
 }
 
@@ -190,9 +273,19 @@ impl Case for BlockchainTestCase {
 /// Returns:
 /// - `Ok(())` if all blocks execute successfully.
 /// - `Err(Error)` if any block fails to execute correctly.
-fn run_case(case: &BlockchainTest) -> Result<(), Error> {
+fn run_case(case: &BlockchainTest, ext: Option<&ChainSpecExtension>) -> Result<(), Error> {
     // Create a new test database and initialize a provider for the test case.
-    let chain_spec = case.network.to_chain_spec();
+    // When an extension callback is supplied (downstream chain injecting extras),
+    // bypass the cached `to_chain_spec()` so the mutation doesn't leak across
+    // tests sharing the same fork.
+    let chain_spec = match ext {
+        Some(f) => {
+            let mut spec = (*case.network.to_chain_spec()).clone();
+            f(&mut spec);
+            Arc::new(spec)
+        }
+        None => case.network.to_chain_spec(),
+    };
     let factory = create_test_provider_factory_with_chain_spec(chain_spec.clone());
     let provider = factory.database_provider_rw().unwrap();
 
