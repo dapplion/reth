@@ -46,9 +46,37 @@ use tracing::info;
 ///
 /// Returns current block height.
 pub fn import<Downloader, Era, PF, B, BB, BH>(
+    downloader: Downloader,
+    provider_factory: &PF,
+    hash_collector: &mut Collector<BlockHash, BlockNumber>,
+) -> eyre::Result<BlockNumber>
+where
+    B: Block<Header = BH, Body = BB>,
+    BH: FullBlockHeader + Value,
+    BB: FullBlockBody<
+        Transaction = <<<PF as DatabaseProviderFactory>::ProviderRW as NodePrimitivesProvider>::Primitives as NodePrimitives>::SignedTx,
+        OmmerHeader = BH,
+    >,
+    Downloader: Stream<Item = eyre::Result<Era>> + Send + 'static + Unpin,
+    Era: EraMeta + Send + 'static,
+    PF: DatabaseProviderFactory<
+        ProviderRW: BlockWriter<Block = B>
+            + DBProvider
+            + StaticFileProviderFactory<Primitives: NodePrimitives<Block = B, BlockHeader = BH, BlockBody = BB>>
+            + StageCheckpointWriter,
+    > + StaticFileProviderFactory<Primitives = <<PF as DatabaseProviderFactory>::ProviderRW as NodePrimitivesProvider>::Primitives>,
+{
+    import_until(downloader, provider_factory, hash_collector, None)
+}
+
+/// Like [`import`] but stops once `max_height` has been written. Useful for
+/// downstream chains that only want to ingest ERA data up to a known fork
+/// boundary (e.g. Gnosis up to its post-merge handoff).
+pub fn import_until<Downloader, Era, PF, B, BB, BH>(
     mut downloader: Downloader,
     provider_factory: &PF,
     hash_collector: &mut Collector<BlockHash, BlockNumber>,
+    max_height: Option<BlockNumber>,
 ) -> eyre::Result<BlockNumber>
 where
     B: Block<Header = BH, Body = BB>,
@@ -88,17 +116,32 @@ where
         let from = height;
         let provider = provider_factory.database_provider_rw()?;
 
-        height = process(
-            &meta?,
-            &mut static_file_provider.latest_writer(StaticFileSegment::Headers)?,
-            &provider,
-            hash_collector,
-            height..,
-        )?;
+        height = match max_height {
+            Some(max) => process(
+                &meta?,
+                &mut static_file_provider.latest_writer(StaticFileSegment::Headers)?,
+                &provider,
+                hash_collector,
+                height..=max,
+            )?,
+            None => process(
+                &meta?,
+                &mut static_file_provider.latest_writer(StaticFileSegment::Headers)?,
+                &provider,
+                hash_collector,
+                height..,
+            )?,
+        };
 
         save_stage_checkpoints(&provider, from, height, height, height)?;
 
         provider.commit()?;
+
+        if let Some(max) = max_height &&
+            height >= max
+        {
+            break;
+        }
     }
 
     let provider = provider_factory.database_provider_rw()?;
@@ -244,6 +287,25 @@ where
     let body: BB = block.body.decode()?;
 
     Ok((header, body))
+}
+
+/// Like [`decode`] but also extracts receipts. Used by chains that ingest ERA
+/// archives without re-executing blocks.
+pub fn decode_with_receipts<BH, BB, R, E>(
+    block: Result<BlockTuple, E>,
+) -> eyre::Result<(BH, BB, Vec<R>)>
+where
+    BH: FullBlockHeader + Value,
+    BB: FullBlockBody<OmmerHeader = BH>,
+    R: alloy_rlp::Decodable,
+    E: From<E2sError> + Error + Send + Sync + 'static,
+{
+    let block = block?;
+    let header: BH = block.header.decode()?;
+    let body: BB = block.body.decode()?;
+    let receipts: Vec<R> = block.receipts.decode()?;
+
+    Ok((header, body, receipts))
 }
 
 /// Extracts block headers and bodies from `iter` and appends them using `writer` and `provider`.
