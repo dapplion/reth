@@ -27,8 +27,20 @@ pub struct ImportEraCommand<C: ChainSpecParser> {
 }
 
 #[derive(Debug, Args)]
-#[group(required = false, multiple = false)]
 pub struct ImportArgs {
+    #[clap(flatten)]
+    source: ImportSource,
+
+    /// Stop importing once this block height has been reached. Useful for
+    /// downstream chains that want to ingest ERA data only up to a known fork
+    /// boundary.
+    #[arg(long, value_name = "MAX_HEIGHT", verbatim_doc_comment)]
+    max_height: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+#[group(required = false, multiple = false)]
+struct ImportSource {
     /// The path to a directory for import.
     ///
     /// The ERA1 files are read from the local directory parsing headers and bodies.
@@ -81,12 +93,13 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> ImportEraC
             .unwrap_or_default() +
             1;
 
-        if let Some(path) = self.import.path {
+        let max_height = self.import.max_height;
+        if let Some(path) = self.import.source.path {
             let stream = read_dir(path, next_block)?;
 
-            era::import(stream, &provider_factory, &mut hash_collector)?;
+            era::import_until(stream, &provider_factory, &mut hash_collector, max_height)?;
         } else {
-            let url = match self.import.url {
+            let url = match self.import.source.url {
                 Some(url) => url,
                 None => self.env.chain.chain().kind().try_to_url()?,
             };
@@ -99,7 +112,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> ImportEraC
             let client = EraClient::new(Client::new(), url, folder);
             let stream = EraStream::new(client, config);
 
-            era::import(stream, &provider_factory, &mut hash_collector)?;
+            era::import_until(stream, &provider_factory, &mut hash_collector, max_height)?;
         }
 
         Ok(())

@@ -14,6 +14,6 @@ pub use export::{export, ExportConfig};
 
 /// Imports history from ERA files.
 pub use history::{
-    build_index, calculate_td_by_number, decode, import, open, process, process_iter,
+    build_index, calculate_td_by_number, decode, import, import_until, open, process, process_iter,
     save_stage_checkpoints, ProcessIter,
 };
