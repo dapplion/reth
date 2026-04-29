@@ -5,6 +5,7 @@ use alloy_consensus::{
 };
 use alloy_eips::{eip4895::Withdrawals, merge::BEACON_NONCE};
 use alloy_evm::{block::BlockExecutorFactory, eth::EthBlockExecutionCtx};
+use core::marker::PhantomData;
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput, BlockExecutionError};
 use reth_execution_types::BlockExecutionResult;
@@ -12,20 +13,25 @@ use reth_primitives_traits::{logs_bloom, Receipt, SignedTransaction};
 use revm::context::Block as _;
 
 /// Block builder for Ethereum.
+///
+/// Generic over the header type `H` so downstream chains that use a
+/// superset header (extra fields beyond `alloy_consensus::Header`) can
+/// reuse this assembler by providing `H: From<Header>`.
 #[derive(Debug, Clone)]
-pub struct EthBlockAssembler<ChainSpec = reth_chainspec::ChainSpec> {
+pub struct EthBlockAssembler<ChainSpec = reth_chainspec::ChainSpec, H = Header> {
     /// The chainspec.
     pub chain_spec: Arc<ChainSpec>,
+    _phantom: PhantomData<H>,
 }
 
-impl<ChainSpec> EthBlockAssembler<ChainSpec> {
+impl<ChainSpec, H> EthBlockAssembler<ChainSpec, H> {
     /// Creates a new [`EthBlockAssembler`].
     pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
-        Self { chain_spec }
+        Self { chain_spec, _phantom: PhantomData }
     }
 }
 
-impl<F, ChainSpec> BlockAssembler<F> for EthBlockAssembler<ChainSpec>
+impl<F, ChainSpec, H> BlockAssembler<F> for EthBlockAssembler<ChainSpec, H>
 where
     F: for<'a> BlockExecutorFactory<
         ExecutionCtx<'a> = EthBlockExecutionCtx<'a>,
@@ -33,12 +39,21 @@ where
         Receipt: Receipt,
     >,
     ChainSpec: EthChainSpec + EthereumHardforks,
+    H: From<Header>
+        + BlockHeader
+        + reth_primitives_traits::BlockHeader
+        + Clone
+        + core::fmt::Debug
+        + Send
+        + Sync
+        + Unpin
+        + 'static,
 {
-    type Block = Block<F::Transaction>;
+    type Block = Block<F::Transaction, H>;
 
     fn assemble_block(
         &self,
-        input: BlockAssemblerInput<'_, '_, F>,
+        input: BlockAssemblerInput<'_, '_, F, H>,
     ) -> Result<Self::Block, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
@@ -76,7 +91,7 @@ where
         // only determine cancun fields when active
         if self.chain_spec.is_cancun_active_at_timestamp(timestamp) {
             block_blob_gas_used = Some(*blob_gas_used);
-            excess_blob_gas = if self.chain_spec.is_cancun_active_at_timestamp(parent.timestamp) {
+            excess_blob_gas = if self.chain_spec.is_cancun_active_at_timestamp(parent.timestamp()) {
                 parent.maybe_next_block_excess_blob_gas(
                     self.chain_spec.blob_params_at_timestamp(timestamp),
                 )
@@ -117,7 +132,7 @@ where
         };
 
         Ok(Block {
-            header,
+            header: H::from(header),
             body: BlockBody { transactions, ommers: Default::default(), withdrawals },
         })
     }
