@@ -1,12 +1,13 @@
 [package]
-name = "ef-tests"
+name = "reth-ef-tests"
 version.workspace = true
-description = "EF testing support for reth."
+description = "EF blockchain-test runner for reth and downstream chains."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
+exclude = ["ethereum-tests/", "fixtures/"]
 
 [lints]
 workspace = true

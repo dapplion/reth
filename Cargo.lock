@@ -3271,39 +3271,7 @@ name = "ef-test-runner"
 version = "2.2.0"
 dependencies = [
  "clap",
- "ef-tests",
-]
-
-[[package]]
-name = "ef-tests"
-version = "2.2.0"
-dependencies = [
- "alloy-consensus",
- "alloy-eips 2.0.4",
- "alloy-genesis",
- "alloy-primitives",
- "alloy-rlp",
- "rayon",
- "reth-chainspec",
- "reth-consensus",
- "reth-db",
- "reth-db-api",
- "reth-db-common",
- "reth-ethereum-consensus",
- "reth-ethereum-primitives",
- "reth-evm",
- "reth-evm-ethereum",
- "reth-primitives-traits",
- "reth-provider",
- "reth-revm",
- "reth-tracing",
- "reth-trie",
- "reth-trie-db",
- "revm",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "walkdir",
+ "reth-ef-tests",
 ]
 
 [[package]]
@@ -8120,6 +8088,38 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "reth-ef-tests"
+version = "2.2.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 2.0.4",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "rayon",
+ "reth-chainspec",
+ "reth-consensus",
+ "reth-db",
+ "reth-db-api",
+ "reth-db-common",
+ "reth-ethereum-consensus",
+ "reth-ethereum-primitives",
+ "reth-evm",
+ "reth-evm-ethereum",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-revm",
+ "reth-tracing",
+ "reth-trie",
+ "reth-trie-db",
+ "revm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "walkdir",
 ]
 
 [[package]]

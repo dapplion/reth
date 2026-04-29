@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use ef_tests::{cases::blockchain_test::BlockchainTests, Suite};
+use reth_ef_tests::{cases::blockchain_test::BlockchainTests, Suite};
 
 /// Command-line arguments for the test runner.
 #[derive(Debug, Parser)]
