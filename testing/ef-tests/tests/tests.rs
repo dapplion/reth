@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 #![cfg(feature = "ef-tests")]
 
-use ef_tests::{cases::blockchain_test::BlockchainTests, suite::Suite};
+use reth_ef_tests::{cases::blockchain_test::BlockchainTests, suite::Suite};
 use std::path::PathBuf;
 
 macro_rules! general_state_test {
